@@ -122,6 +122,9 @@ class CameraDriverGv : public CameraDriver
 
     bool isTimestampReady(uint stream_id, ArvBuffer* buffer) override;
 
+    /// Shut down this camera's context if expected image reception stalls.
+    void checkStreamTimeout();
+
     //--- MEMBER DECLARATION ---//
 
   protected:
@@ -131,8 +134,11 @@ class CameraDriverGv : public CameraDriver
     /// Protects the shared PTP snapshot when several streams are processing frames.
     std::mutex ptp_mutex_;
     std::chrono::steady_clock::time_point last_ptp_check_{};
-    bool ptp_ready_ = false;
+    bool ptp_ready_            = false;
     int64_t ptp_max_offset_ns_ = 1000000;
+
+    double stream_timeout_ = 0.0;
+    rclcpp::TimerBase::SharedPtr stream_watchdog_;
 };
 
 }  // namespace camera_aravis2

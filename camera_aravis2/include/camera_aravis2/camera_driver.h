@@ -137,6 +137,9 @@ class CameraDriver : public CameraAravisNodeBase
         /// Last published PTP timestamp, confined to the buffer processing thread.
         uint64_t last_device_timestamp = 0;
 
+        /// Monotonic receive time, shared by the stream callback and watchdog.
+        std::atomic<int64_t> last_buffer_received_ns{0};
+
         /// Thread to process ready stream buffer.
         std::thread buffer_processing_thread;
 
@@ -502,7 +505,13 @@ class CameraDriver : public CameraAravisNodeBase
     virtual void postFrameProcessingCallback(const uint stream_id) = 0;
 
     /// Return whether a frame has a usable timestamp before converting or publishing it.
-    virtual bool isTimestampReady(uint, ArvBuffer*) { return true; }
+    virtual bool isTimestampReady(uint, ArvBuffer*)
+    {
+        return true;
+    }
+
+    /// Return monotonic time for receive timeout checks.
+    static int64_t steadyTimeNs();
 
     /**
      * @brief Print currently applied camera configuration.

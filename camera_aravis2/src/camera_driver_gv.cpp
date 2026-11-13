@@ -30,6 +30,7 @@
 
 // Std
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -55,11 +56,24 @@ CameraDriverGv::CameraDriverGv(const rclcpp::NodeOptions& options) :
     setupParameters();
 
     auto ptp_offset_desc        = rcl_interfaces::msg::ParameterDescriptor{};
-    ptp_offset_desc.description = "Maximum absolute offset from the PTP master in nanoseconds when the camera exposes PtpOffsetFromMaster.";
+    ptp_offset_desc.description = "Maximum absolute offset from the PTP master in nanoseconds when "
+                                  "the camera exposes PtpOffsetFromMaster.";
     ptp_offset_desc.read_only   = true;
-    ptp_max_offset_ns_          = declare_parameter<int64_t>("ptp_max_offset_ns", 1000000, ptp_offset_desc);
+    ptp_max_offset_ns_ = declare_parameter<int64_t>("ptp_max_offset_ns", 1000000, ptp_offset_desc);
     if (ptp_max_offset_ns_ < 0)
         throw std::invalid_argument("ptp_max_offset_ns must be nonnegative.");
+
+    auto stream_timeout_desc = rcl_interfaces::msg::ParameterDescriptor{};
+    stream_timeout_desc.description =
+      "Seconds without a complete image before shutting down for supervision to restart the "
+      "camera. Zero disables the timeout. Enable only when continuous frames are expected.";
+    stream_timeout_desc.read_only = true;
+    stream_timeout_ = declare_parameter<double>("stream_timeout", 0.0, stream_timeout_desc);
+    if (!std::isfinite(stream_timeout_) || stream_timeout_ < 0.0)
+        throw std::invalid_argument("stream_timeout must be finite and nonnegative.");
+    if (stream_timeout_ > 0.0)
+        stream_watchdog_ = create_wall_timer(std::chrono::milliseconds(250),
+                                             std::bind(&CameraDriverGv::checkStreamTimeout, this));
 
     is_verbose_enable_ = get_parameter("verbose").as_bool();
 
@@ -121,6 +135,17 @@ CameraDriverGv::CameraDriverGv(const rclcpp::NodeOptions& options) :
 //==================================================================================================
 CameraDriverGv::~CameraDriverGv()
 {
+    if (stream_watchdog_)
+        stream_watchdog_->cancel();
+
+    is_spawning_ = false;
+    if (spawn_stream_thread_.joinable())
+        spawn_stream_thread_.join();
+    {
+        const std::lock_guard<std::mutex> lock(acquisition_mutex_);
+        is_initialized_ = false;
+    }
+
     // Guarded error object
     GuardedGError err;
 
@@ -135,11 +160,6 @@ CameraDriverGv::~CameraDriverGv()
     for (uint i = 0; i < streams_.size(); i++)
         if (streams_[i].p_arv_stream)
             arv_stream_set_emit_signals(streams_[i].p_arv_stream, FALSE);
-
-    //--- join spawning thread
-    is_spawning_ = false;
-    if (spawn_stream_thread_.joinable())
-        spawn_stream_thread_.join();
 
     //--- join diagnostic thread
     is_diagnostics_published_ = false;
@@ -332,15 +352,20 @@ bool CameraDriverGv::isTimestampReady(const uint stream_id, ArvBuffer* buffer)
         checkPtpState();
     if (!ptp_ready_)
     {
-        RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000, "Withholding images until PTP is synchronized. Status: %s", p_gv_tl_control_->ptp_status.c_str());
+        RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000,
+                             "Withholding images until PTP is synchronized. Status: %s",
+                             p_gv_tl_control_->ptp_status.c_str());
         return false;
     }
 
     const uint64_t timestamp = arv_buffer_get_timestamp(buffer);
     auto& last_timestamp     = streams_[stream_id].last_device_timestamp;
-    if (timestamp == 0 || timestamp > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) || timestamp <= last_timestamp)
+    if (timestamp == 0 || timestamp > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        timestamp <= last_timestamp)
     {
-        RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000, "Dropping an invalid or nonincreasing PTP timestamp on stream %u.", stream_id);
+        RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000,
+                             "Dropping an invalid or nonincreasing PTP timestamp on stream %u.",
+                             stream_id);
         return false;
     }
     last_timestamp = timestamp;
@@ -355,22 +380,53 @@ void CameraDriverGv::checkPtpState()
     p_gv_tl_control_->ptp_status = "Unavailable";
 
     // Some cameras require a latch before reading their PTP snapshot.
-    if (arv_device_get_feature(p_device_, "PtpDataSetLatch") != nullptr && !executeCommand("PtpDataSetLatch"))
+    if (arv_device_get_feature(p_device_, "PtpDataSetLatch") != nullptr &&
+        !executeCommand("PtpDataSetLatch"))
         return;
-    if (!getFeatureValue<std::string>("PtpStatus", p_gv_tl_control_->ptp_status) || p_gv_tl_control_->ptp_status != "Slave")
+    if (!getFeatureValue<std::string>("PtpStatus", p_gv_tl_control_->ptp_status) ||
+        p_gv_tl_control_->ptp_status != "Slave")
         return;
 
     if (arv_device_get_feature(p_device_, "PtpOffsetFromMaster") != nullptr)
     {
         if (!getFeatureValue<int64_t>("PtpOffsetFromMaster", p_gv_tl_control_->ptp_offset))
             return;
-        if (p_gv_tl_control_->ptp_offset < -ptp_max_offset_ns_ || p_gv_tl_control_->ptp_offset > ptp_max_offset_ns_)
+        if (p_gv_tl_control_->ptp_offset < -ptp_max_offset_ns_ ||
+            p_gv_tl_control_->ptp_offset > ptp_max_offset_ns_)
         {
-            RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000, "PTP offset %ld ns exceeds the %ld ns limit.", p_gv_tl_control_->ptp_offset, ptp_max_offset_ns_);
+            RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000,
+                                 "PTP offset %ld ns exceeds the %ld ns limit.",
+                                 p_gv_tl_control_->ptp_offset, ptp_max_offset_ns_);
             return;
         }
     }
     ptp_ready_ = true;
+}
+
+//==================================================================================================
+void CameraDriverGv::checkStreamTimeout()
+{
+    if (!is_initialized_)
+        return;
+    const std::lock_guard<std::mutex> lock(acquisition_mutex_);
+    if (current_num_subscribers_ == 0)
+        return;
+    const auto now = steadyTimeNs();
+    for (const auto& stream : streams_)
+    {
+        const auto elapsed = std::chrono::duration<double>(
+          std::chrono::nanoseconds(now - stream.last_buffer_received_ns.load()));
+        if (stream.p_arv_stream != nullptr && elapsed.count() > stream_timeout_)
+        {
+            RCLCPP_FATAL(
+              logger_,
+              "No complete image on stream %s for %.3f seconds. Shutting down for camera restart.",
+              stream.name.c_str(), elapsed.count());
+            rclcpp::shutdown(get_node_base_interface()->get_context(),
+                             "Camera image stream timed out.");
+            return;
+        }
+    }
 }
 
 }  // end namespace camera_aravis2

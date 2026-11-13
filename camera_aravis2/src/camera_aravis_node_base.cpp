@@ -114,46 +114,30 @@ void CameraAravisNodeBase::setupParameters()
     // Guarded error object
     GuardedGError err;
 
-    //--- Discover available interfaces and devices.
-
-    uint n_devices = listAvailableCameraDevices();
-    if (n_devices == 0)
-        return false;
-
-    //--- connect to camera specified by guid parameter
-    guid_ = get_parameter("guid").as_string();
-
-    const int MAX_RETRIES = 10;
-    int tryCount          = 1;
-    while (!p_camera_ && tryCount <= MAX_RETRIES)
+    guid_              = get_parameter("guid").as_string();
+    const auto context = get_node_base_interface()->get_context();
+    while (rclcpp::ok(context) && p_camera_ == nullptr)
     {
-        if (guid_ == "")
+        arv_update_device_list();
+        if (!guid_.empty() || arv_get_n_devices() > 0)
         {
-            RCLCPP_WARN(logger_, "No guid specified.");
-            RCLCPP_INFO(logger_, "Opening: (any)");
-            p_camera_ = arv_camera_new(nullptr, err.ref());
-        }
-        else
-        {
-            RCLCPP_INFO(logger_, "Opening: %s ", guid_.c_str());
-            p_camera_ = arv_camera_new(guid_.c_str(), err.ref());
-        }
-
-        if (!p_camera_)
-        {
+            p_camera_ = arv_camera_new(guid_.empty() ? nullptr : guid_.c_str(), err.ref());
             CHECK_GERROR(err, logger_);
-            RCLCPP_WARN(logger_, "Unable to open camera. Retrying (%i/%i) ...",
-                        tryCount, MAX_RETRIES);
-            rclcpp::sleep_for(std::chrono::seconds(1));
-            tryCount++;
+            if (p_camera_ != nullptr && arv_camera_is_gv_device(p_camera_) &&
+                !arv_gv_device_is_controller(ARV_GV_DEVICE(arv_camera_get_device(p_camera_))))
+            {
+                g_object_unref(p_camera_);
+                p_camera_ = nullptr;
+            }
+        }
+        if (p_camera_ == nullptr)
+        {
+            RCLCPP_WARN(logger_, "Camera unavailable; retrying discovery.");
+            rclcpp::sleep_for(std::chrono::seconds(1), context);
         }
     }
-
-    if (!p_camera_)
-    {
-        RCLCPP_FATAL(logger_, "Failed to open any camera.");
+    if (p_camera_ == nullptr)
         return false;
-    }
 
     //--- get device pointer from camera
     p_device_ = arv_camera_get_device(p_camera_);
@@ -712,7 +696,7 @@ void CameraAravisNodeBase::handleControlLostSignal(ArvDevice* p_device, gpointer
 {
     RCL_UNUSED(p_device);
 
-    CameraAravisNodeBase* p_ca_instance = reinterpret_cast<CameraAravisNodeBase*>(p_user_data);
+    auto* p_ca_instance = static_cast<CameraAravisNodeBase*>(p_user_data);
 
     if (!p_ca_instance)
         return;
@@ -720,7 +704,8 @@ void CameraAravisNodeBase::handleControlLostSignal(ArvDevice* p_device, gpointer
     RCLCPP_FATAL(p_ca_instance->logger_, "Control to aravis device lost.");
     RCLCPP_FATAL(p_ca_instance->logger_, "  GUID: %s", p_ca_instance->guid_.c_str());
 
-    rclcpp::shutdown();
+    rclcpp::shutdown(p_ca_instance->get_node_base_interface()->get_context(),
+                     "Camera control lost.");
 }
 
 }  // end namespace camera_aravis2

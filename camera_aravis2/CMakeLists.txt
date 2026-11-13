@@ -147,6 +147,7 @@ install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_catch2 REQUIRED)
   find_package(ament_cmake_ros REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(Catch2 REQUIRED)
   ament_add_catch2(test_camera_driver test/test_camera_driver.cpp
     RUNNER "${ament_cmake_ros_DIR}/run_test_isolated.py")
@@ -154,6 +155,10 @@ if(BUILD_TESTING)
   target_compile_definitions(test_camera_driver PRIVATE ${COMMON_COMPILE_DEFINITIONS}
     TEST_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
     TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+  ament_add_pytest_test(test_recovery test/test_recovery.py
+    RUNNER "${ament_cmake_ros_DIR}/run_test_isolated.py" TIMEOUT 100)
+  # The simulated GigE camera binds the standard control port on loopback.
+  set_tests_properties(test_camera_driver test_recovery PROPERTIES RUN_SERIAL TRUE)
 
   find_package(ament_cmake_copyright REQUIRED)
   ament_copyright()

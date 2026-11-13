@@ -312,6 +312,20 @@ colcon test-result --all
 
 ## FAQ
 
+### Recovering from camera loss
+
+Camera discovery retries until the node's ROS context shuts down. A camera may therefore be connected after startup or become available after another client releases control. An unavailable camera keeps component construction waiting; use a dedicated camera container.
+
+Control loss shuts down the camera's ROS context. The supplied composed launch file restarts that process and loads a fresh camera component on every start:
+
+```shell
+ros2 launch camera_aravis2 camera_driver_gv_composed.launch.py params_file:=/path/to/camera.yaml
+```
+
+The parameter file must match the `camera` node or use the `/**` wildcard. Configure camera calibration and GenICam features as described above. The optional `namespace` launch argument places both the component and container in that namespace. Components added for in-process image processing must also be created and loaded in the process-start handler so they return after a restart. Keep unrelated autonomy nodes in separate processes.
+
+The read-only GigE driver parameter `stream_timeout` enables recovery when the control connection remains alive but complete images stop arriving. It is measured in seconds, checked every 250 milliseconds, and defaults to zero (disabled). Set it above the longest expected exposure and frame interval for continuous acquisition. Leave it disabled for externally triggered acquisition or other intentional pauses. The timeout runs only while subscribers request images. It measures complete received buffers, so waiting for PTP synchronization does not trigger it.
+
 ### How to use PTP
 
 *GigEVision Cameras Only*
@@ -399,6 +413,8 @@ During the declaration of floating point or integer parameters, camera_aravis wi
 In this, camera_aravis will set the intersection of both ranges as the range for the corresponding parameter.
 
 An example of this yaml file is given in [dynamic_parameters_example.yaml](camera_aravis2/config/dynamic_parameters_example.yaml).
+
+Update live camera controls one parameter at a time. Atomic requests containing several parameters and a camera control are rejected before any hardware write. This avoids a rejected ROS transaction leaving earlier camera writes applied. Startup camera configuration remains available through the parameter file.
 
 ### How to publish camera diagnostics / status
 

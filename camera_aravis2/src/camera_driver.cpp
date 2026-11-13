@@ -1125,13 +1125,17 @@ void CameraDriver::handleMessageSubscriptionChange(rclcpp::MatchedInfo& iEventIn
     {
         int num_subscribers = 0;
         for (const auto& stream : streams_)
-            num_subscribers = std::max(num_subscribers, static_cast<int>(stream.camera_pub.getNumSubscribers()));
+            num_subscribers =
+              std::max(num_subscribers, static_cast<int>(stream.camera_pub.getNumSubscribers()));
 
         //--- if the new subscriber count of the matched event is greater than 0 and if there were
         //--- no subscriber so far, start acquisition
         if (num_subscribers > 0 && current_num_subscribers_ == 0)
         {
             RCLCPP_INFO(logger_, "|-> Acquisition start.");
+
+            for (auto& stream : streams_)
+                stream.last_buffer_received_ns = steadyTimeNs();
 
             arv_device_execute_command(p_device_, "AcquisitionStart", err.ref());
             CHECK_GERROR_MSG(err, logger_, "In executing 'AcquisitionStart'.");
@@ -1367,8 +1371,13 @@ rcl_interfaces::msg::SetParametersResult CameraDriver::handleDynamicParameterCha
 
     // GenICam writes cannot be rolled back as a ROS parameter transaction.
     if (iParameters.size() > 1 &&
-        std::any_of(iParameters.begin(), iParameters.end(), [this](const rclcpp::Parameter& parameter)
-                    { return std::find(dynamic_parameters_names_.begin(), dynamic_parameters_names_.end(), parameter.get_name()) != dynamic_parameters_names_.end(); }))
+        std::any_of(iParameters.begin(), iParameters.end(),
+                    [this](const rclcpp::Parameter& parameter)
+                    {
+                        return std::find(dynamic_parameters_names_.begin(),
+                                         dynamic_parameters_names_.end(),
+                                         parameter.get_name()) != dynamic_parameters_names_.end();
+                    }))
     {
         retVal.successful = false;
         retVal.reason     = "Update camera controls one parameter at a time.";
@@ -1777,7 +1786,8 @@ void CameraDriver::spawnCameraStreams()
     // A matched event can arrive before stream initialization and must not be lost.
     current_num_subscribers_ = 0;
     for (const auto& stream : streams_)
-        current_num_subscribers_ = std::max(current_num_subscribers_, static_cast<int>(stream.camera_pub.getNumSubscribers()));
+        current_num_subscribers_ = std::max(
+          current_num_subscribers_, static_cast<int>(stream.camera_pub.getNumSubscribers()));
 #else
     //--- If matched events are not available, the number of subscribers are not dynamically
     //--- changed. Thus, set number of subscribers to 1 in order for the acquisition to be started
@@ -1789,6 +1799,9 @@ void CameraDriver::spawnCameraStreams()
     if (current_num_subscribers_ > 0)
     {
         RCLCPP_INFO(logger_, "|-> Acquisition start at initialization.");
+
+        for (auto& stream : streams_)
+            stream.last_buffer_received_ns = steadyTimeNs();
 
         arv_device_execute_command(p_device_, "AcquisitionStart", err.ref());
         CHECK_GERROR_MSG(err, logger_, "In executing 'AcquisitionStart'.");
@@ -2251,6 +2264,14 @@ void CameraDriver::onCalculateWhiteBalanceOnceTriggered(
 }
 
 //==================================================================================================
+int64_t CameraDriver::steadyTimeNs()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+//==================================================================================================
 void CameraDriver::handleNewBufferSignal(ArvStream* p_stream, gpointer p_user_data)
 {
     ///--- get data tuples from user data
@@ -2288,6 +2309,8 @@ void CameraDriver::handleNewBufferSignal(ArvStream* p_stream, gpointer p_user_da
         arv_stream_push_buffer(p_stream, p_arv_buffer);
         return;
     }
+
+    stream.last_buffer_received_ns = steadyTimeNs();
 
     //--- push buffer pointers into concurrent queue to be processed by processing thread
     auto p_img_msg = (*stream.p_buffer_pool)[p_arv_buffer];
