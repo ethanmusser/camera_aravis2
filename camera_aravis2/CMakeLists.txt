@@ -145,6 +145,15 @@ install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 # Tests
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_catch2 REQUIRED)
+  find_package(ament_cmake_ros REQUIRED)
+  find_package(Catch2 REQUIRED)
+  ament_add_catch2(test_camera_driver test/test_camera_driver.cpp
+    RUNNER "${ament_cmake_ros_DIR}/run_test_isolated.py")
+  target_link_libraries(test_camera_driver ${LIBRARY_NAME} Catch2::Catch2WithMain)
+  target_compile_definitions(test_camera_driver PRIVATE ${COMMON_COMPILE_DEFINITIONS}
+    TEST_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+
   find_package(ament_cmake_copyright REQUIRED)
   ament_copyright()
   find_package(ament_cmake_cppcheck REQUIRED)

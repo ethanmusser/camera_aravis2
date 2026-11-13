@@ -34,6 +34,7 @@
 
 // Std
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -570,6 +571,9 @@ class CameraDriver : public CameraAravisNodeBase
 
     /// Number of subscribers currently connected to the message topic.
     int current_num_subscribers_;
+
+    /// Serializes acquisition changes with stream initialization.
+    std::mutex acquisition_mutex_;
 
     /// YAML node holding diagnostic features
     YAML::Node diagnostic_features_;
