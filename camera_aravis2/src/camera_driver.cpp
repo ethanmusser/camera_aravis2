@@ -1365,6 +1365,16 @@ rcl_interfaces::msg::SetParametersResult CameraDriver::handleDynamicParameterCha
     rcl_interfaces::msg::SetParametersResult retVal;
     retVal.successful = true;
 
+    // GenICam writes cannot be rolled back as a ROS parameter transaction.
+    if (iParameters.size() > 1 &&
+        std::any_of(iParameters.begin(), iParameters.end(), [this](const rclcpp::Parameter& parameter)
+                    { return std::find(dynamic_parameters_names_.begin(), dynamic_parameters_names_.end(), parameter.get_name()) != dynamic_parameters_names_.end(); }))
+    {
+        retVal.successful = false;
+        retVal.reason     = "Update camera controls one parameter at a time.";
+        return retVal;
+    }
+
     //-- loop through all parameters and set information accordingly
     for (rclcpp::Parameter param : iParameters)
     {

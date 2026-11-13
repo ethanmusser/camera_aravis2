@@ -77,11 +77,11 @@ class CameraFixture
           { ++images_; });
     }
 
-    void connect()
+    void connect(const std::vector<rclcpp::Parameter>& extra_parameters = {})
     {
         auto options = rclcpp::NodeOptions().context(context_);
         options.arguments({"--ros-args", "-r", "__node:=camera"});
-        options.parameter_overrides({
+        std::vector<rclcpp::Parameter> parameters{
           {"guid", "127.0.0.1"},
           {"camera_info_urls", std::vector<std::string>{TEST_CONFIG_DIR "/camera_info_example_gv.yaml"}},
           {"ImageFormatControl.PixelFormat", "Mono8"},
@@ -90,7 +90,9 @@ class CameraFixture
           {"AcquisitionControl.AcquisitionFrameRate", 25.0},
           {"TransportLayerControl.GevSCPSPacketSize", 1500},
           {"camera.image_raw.enable_pub_plugins", std::vector<std::string>{"image_transport/raw"}},
-        });
+        };
+        parameters.insert(parameters.end(), extra_parameters.begin(), extra_parameters.end());
+        options.parameter_overrides(parameters);
         camera_ = std::make_shared<camera_aravis2::CameraDriverGv>(options);
         executor_->add_node(camera_);
     }
@@ -149,4 +151,24 @@ TEST_CASE("Acquisition follows subscribers connected after initialization", "[ca
     REQUIRE(fixture.waitFor([&fixture]
                             { return fixture.acquisitionStatus() == 0; }));
 #endif
+}
+
+TEST_CASE("Rejected camera control batches leave the hardware unchanged", "[camera][parameters]")
+{
+    CameraFixture fixture;
+    fixture.connect({{"dynamic_parameters_yaml_url", TEST_DATA_DIR "/dynamic_parameters.yaml"}});
+    REQUIRE(fixture.camera_->set_parameter({"GainRaw", 1}).successful);
+    const auto original_trigger = fixture.camera_->get_parameter("TriggerSource").as_string();
+
+    const auto result = fixture.camera_->set_parameters_atomically({{"GainRaw", 2}, {"TriggerSource", "Invalid"}});
+    CHECK_FALSE(result.successful);
+    CHECK(fixture.camera_->get_parameter("GainRaw").as_int() == 1);
+    CHECK(fixture.camera_->get_parameter("TriggerSource").as_string() == original_trigger);
+    guint32 actual_gain = 0;
+    REQUIRE(arv_fake_camera_read_register(arv_gv_fake_camera_get_fake_camera(fixture.server_.get()), ARV_FAKE_CAMERA_REGISTER_GAIN_RAW, &actual_gain));
+    CHECK(actual_gain == 1);
+
+    REQUIRE(fixture.camera_->set_parameter({"GainRaw", 3}).successful);
+    REQUIRE(arv_fake_camera_read_register(arv_gv_fake_camera_get_fake_camera(fixture.server_.get()), ARV_FAKE_CAMERA_REGISTER_GAIN_RAW, &actual_gain));
+    CHECK(actual_gain == 3);
 }

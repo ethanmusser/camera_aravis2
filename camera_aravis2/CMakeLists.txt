@@ -152,7 +152,8 @@ if(BUILD_TESTING)
     RUNNER "${ament_cmake_ros_DIR}/run_test_isolated.py")
   target_link_libraries(test_camera_driver ${LIBRARY_NAME} Catch2::Catch2WithMain)
   target_compile_definitions(test_camera_driver PRIVATE ${COMMON_COMPILE_DEFINITIONS}
-    TEST_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+    TEST_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+    TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
 
   find_package(ament_cmake_copyright REQUIRED)
   ament_copyright()

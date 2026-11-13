@@ -1,0 +1,6 @@
+- FeatureName: GainRaw
+  Type: int
+  Description: Manual sensor gain.
+- FeatureName: TriggerSource
+  Type: string
+  Description: Source of acquisition triggers.
