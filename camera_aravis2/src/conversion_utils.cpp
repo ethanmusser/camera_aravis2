@@ -28,6 +28,10 @@
 
 #include "camera_aravis2/conversion_utils.h"
 
+#include <array>
+#include <limits>
+#include <opencv2/core.hpp>
+
 // ROS
 #include <rclcpp/rclcpp.hpp>
 
@@ -35,9 +39,44 @@ namespace camera_aravis2
 {
 
 //==================================================================================================
+[[nodiscard]] bool unpack24MonoImg(sensor_msgs::msg::Image::SharedPtr& in,
+                                   sensor_msgs::msg::Image::SharedPtr& out)
+{
+    if (!in || in == out || in->width == 0 || in->height == 0 ||
+        in->width > std::numeric_limits<uint32_t>::max() / 4 ||
+        in->height > static_cast<uint32_t>(std::numeric_limits<int>::max()))
+        return false;
+    const uint64_t row_bytes    = static_cast<uint64_t>(in->width) * 3;
+    const uint64_t required     = static_cast<uint64_t>(in->height - 1) * in->step + row_bytes;
+    const uint64_t output_bytes = static_cast<uint64_t>(in->width) * in->height * 4;
+    if (in->step < row_bytes || in->data.size() < required ||
+        output_bytes > std::numeric_limits<size_t>::max())
+        return false;
+
+    if (!out)
+        out = std::make_shared<sensor_msgs::msg::Image>();
+    out->header       = in->header;
+    out->width        = in->width;
+    out->height       = in->height;
+    out->encoding     = sensor_msgs::image_encodings::TYPE_32SC1;
+    out->is_bigendian = 0;
+    out->step         = in->width * 4;
+    out->data.resize(static_cast<size_t>(output_bytes));
+
+    const cv::Mat packed(static_cast<int>(in->height), static_cast<int>(in->width), CV_8UC3,
+                         in->data.data(), in->step);
+    cv::Mat expanded(static_cast<int>(out->height), static_cast<int>(out->width), CV_8UC4,
+                     out->data.data(), out->step);
+    const std::array<int, 8> channels = in->is_bigendian != 0
+                                          ? std::array<int, 8>{2, 0, 1, 1, 0, 2, -1, 3}
+                                          : std::array<int, 8>{0, 0, 1, 1, 2, 2, -1, 3};
+    cv::mixChannels(&packed, 1, &expanded, 1, channels.data(), 4);
+    return true;
+}
+
+//==================================================================================================
 [[nodiscard]] bool renameImg(sensor_msgs::msg::Image::SharedPtr& in,
-                             sensor_msgs::msg::Image::SharedPtr& out,
-                             const std::string out_format)
+                             sensor_msgs::msg::Image::SharedPtr& out, const std::string out_format)
 {
     if (!in)
         return false;

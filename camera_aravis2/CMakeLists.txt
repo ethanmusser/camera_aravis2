@@ -155,6 +155,8 @@ if(BUILD_TESTING)
   target_compile_definitions(test_camera_driver PRIVATE ${COMMON_COMPILE_DEFINITIONS}
     TEST_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
     TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+  ament_add_catch2(test_conversion test/test_conversion.cpp)
+  target_link_libraries(test_conversion ${LIBRARY_NAME} Catch2::Catch2WithMain)
   ament_add_pytest_test(test_recovery test/test_recovery.py
     RUNNER "${ament_cmake_ros_DIR}/run_test_isolated.py" TIMEOUT 100)
   # The simulated GigE camera binds the standard control port on loopback.

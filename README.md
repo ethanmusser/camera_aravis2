@@ -312,6 +312,12 @@ colcon test-result --all
 
 ## FAQ
 
+### Receiving Bayer24 images
+
+`BayerRG24` is expanded from three bytes per sample into the generic ROS encoding `32SC1`. Each sample retains its unsigned 24-bit count in a positive signed 32-bit value. Output bytes are little-endian and the mosaic remains RGGB. This encoding carries raw samples; it does not identify the Bayer pattern to generic ROS image processors. Configure a downstream HDR processor for RGGB explicitly.
+
+Use `camera.image_raw.enable_pub_plugins: ["image_transport/raw"]` for this stream. Keep HDR processing in the same component container with intra-process communication enabled to avoid sending expanded raw images through DDS. `BayerRG16` continues to use the standard `bayer_rggb16` encoding.
+
 ### Recovering from camera loss
 
 Camera discovery retries until the node's ROS context shuts down. A camera may therefore be connected after startup or become available after another client releases control. An unavailable camera keeps component construction waiting; use a dedicated camera container.

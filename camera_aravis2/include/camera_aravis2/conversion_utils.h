@@ -42,12 +42,16 @@ namespace camera_aravis2
 {
 
 // Conversion functions from GenICam to ROS formats
-using ConversionFunction = std::function<void(sensor_msgs::msg::Image::SharedPtr& in,
+using ConversionFunction = std::function<bool(sensor_msgs::msg::Image::SharedPtr& in,
                                               sensor_msgs::msg::Image::SharedPtr& out)>;
 
 [[nodiscard]] bool renameImg(sensor_msgs::msg::Image::SharedPtr& in,
                              sensor_msgs::msg::Image::SharedPtr& out,
                              const std::string out_format);
+
+/// Expand packed 24-bit samples into positive, little-endian 32-bit signed counts.
+[[nodiscard]] bool unpack24MonoImg(sensor_msgs::msg::Image::SharedPtr& in,
+                                  sensor_msgs::msg::Image::SharedPtr& out);
 [[nodiscard]] bool shiftImg(sensor_msgs::msg::Image::SharedPtr& in,
                             sensor_msgs::msg::Image::SharedPtr& out,
                             const size_t n_digits, const std::string out_format);
@@ -125,6 +129,7 @@ const std::map<std::string, ConversionFunction> CONVERSIONS_DICTIONARY =
                            sensor_msgs::image_encodings::BAYER_GRBG8)},
     {"BayerRG16", std::bind(&renameImg, std::placeholders::_1, std::placeholders::_2,
                             sensor_msgs::image_encodings::BAYER_RGGB16)},
+    {"BayerRG24", &unpack24MonoImg},
     {"BayerBG16", std::bind(&renameImg, std::placeholders::_1, std::placeholders::_2,
                             sensor_msgs::image_encodings::BAYER_BGGR16)},
     {"BayerGB16", std::bind(&renameImg, std::placeholders::_1, std::placeholders::_2,

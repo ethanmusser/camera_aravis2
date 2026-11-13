@@ -1852,7 +1852,13 @@ void CameraDriver::processStreamBuffer(const uint stream_id)
         {
             sensor_msgs::msg::Image::SharedPtr p_cvt_img_msg =
               stream.p_buffer_pool->getRecyclableImg();
-            stream.cvt_pixel_format(p_img_msg, p_cvt_img_msg);
+            if (!stream.cvt_pixel_format(p_img_msg, p_cvt_img_msg))
+            {
+                RCLCPP_ERROR_THROTTLE(logger_, *get_clock(), 5000,
+                                      "Dropping malformed %s image on stream %u.",
+                                      stream.sensor.pixel_format.c_str(), stream_id);
+                continue;
+            }
             p_img_msg = p_cvt_img_msg;
         }
 
@@ -1890,8 +1896,7 @@ bool CameraDriver::adjustImageRoi(ImageRoi& img_roi, ArvBuffer* p_buffer) const
 
 //==================================================================================================
 void CameraDriver::fillImageMsgMetadata(sensor_msgs::msg::Image::SharedPtr& p_img_msg,
-                                        ArvBuffer* p_buffer,
-                                        const Sensor& sensor,
+                                        ArvBuffer* p_buffer, const Sensor& sensor,
                                         const ImageRoi& img_roi) const
 {
     std::shared_ptr<GvTransportLayerControl> p_gv_tl_control =
