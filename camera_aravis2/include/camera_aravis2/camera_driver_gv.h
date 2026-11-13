@@ -136,6 +136,7 @@ class CameraDriverGv : public CameraDriver
     std::chrono::steady_clock::time_point last_ptp_check_{};
     bool ptp_ready_            = false;
     int64_t ptp_max_offset_ns_ = 1000000;
+    uint64_t ptp_valid_since_ns_ = 0;
 
     double stream_timeout_ = 0.0;
     rclcpp::TimerBase::SharedPtr stream_watchdog_;

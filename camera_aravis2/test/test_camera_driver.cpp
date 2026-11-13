@@ -383,33 +383,59 @@ TEST_CASE("PTP images wait for lock and stop after lock loss", "[camera][ptp]")
     REQUIRE(fixture.waitFor([&fixture, after_loss] { return fixture.images_ >= after_loss + 10; }));
 }
 
+uint64_t systemTimestamp()
+{
+    return static_cast<uint64_t>(rclcpp::Clock(RCL_SYSTEM_TIME).now().nanoseconds());
+}
+
 TEST_CASE("PTP rejects offsets, failed reads, and backward timestamps", "[camera][ptp]")
 {
     CameraFixture fixture(true);
     fixture.writeRegister(0x5000, 1);
     fixture.connect({{"TransportLayerControl.PtpEnable", true}});
     REQUIRE(fixture.waitFor([&fixture] { return fixture.camera_->isInitialized(); }));
-    REQUIRE(fixture.camera_->acceptTimestamp(100));
-    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(100));
-    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(99));
+    const auto timestamp = systemTimestamp();
+    REQUIRE(fixture.camera_->acceptTimestamp(timestamp));
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(timestamp));
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(timestamp - 1));
     REQUIRE_FALSE(fixture.camera_->acceptTimestamp(0));
     REQUIRE_FALSE(fixture.camera_->acceptTimestamp(std::numeric_limits<uint64_t>::max()));
-    REQUIRE(fixture.camera_->acceptTimestamp(101));
+    REQUIRE(fixture.camera_->acceptTimestamp(systemTimestamp()));
 
     fixture.setPtpOffset(1000001);
-    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(102));
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(systemTimestamp()));
     fixture.setPtpOffset(-1000001);
-    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(102));
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(systemTimestamp()));
     fixture.setPtpOffset(-1000000);
-    REQUIRE(fixture.camera_->acceptTimestamp(102));
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(systemTimestamp()));
+    REQUIRE(fixture.camera_->acceptTimestamp(systemTimestamp()));
 
     fixture.writeRegister(0x5020, 0);
-    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(103));
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(systemTimestamp()));
     fixture.writeRegister(0x5020, 1);
     fixture.writeRegister(0x5024, 0);
-    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(103));
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(systemTimestamp()));
     fixture.writeRegister(0x5024, 1);
-    REQUIRE(fixture.camera_->acceptTimestamp(103));
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(systemTimestamp()));
+    REQUIRE(fixture.camera_->acceptTimestamp(systemTimestamp()));
+}
+
+TEST_CASE("Frames queued before PTP lock or relock are discarded", "[camera][ptp]")
+{
+    CameraFixture fixture(true);
+    fixture.connect({{"TransportLayerControl.PtpEnable", true}});
+    REQUIRE(fixture.waitFor([&fixture] { return fixture.camera_->isInitialized(); }));
+    const auto before_lock = systemTimestamp();
+    fixture.writeRegister(0x5000, 1);
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(before_lock));
+    REQUIRE(fixture.camera_->acceptTimestamp(systemTimestamp()));
+
+    fixture.writeRegister(0x5000, 2);
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(systemTimestamp()));
+    const auto before_relock = systemTimestamp();
+    fixture.writeRegister(0x5000, 1);
+    REQUIRE_FALSE(fixture.camera_->acceptTimestamp(before_relock));
+    REQUIRE(fixture.camera_->acceptTimestamp(systemTimestamp()));
 }
 
 TEST_CASE("Discovery waits for a camera connected after startup", "[camera][recovery]")

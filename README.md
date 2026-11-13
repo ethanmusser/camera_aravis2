@@ -354,7 +354,7 @@ PTP-enabled publication requires an external master and camera status `Slave`. I
 
 The read-only driver parameter `ptp_max_offset_ns` sets the maximum absolute offset from the master when the camera exposes `PtpOffsetFromMaster`. Its default is 1000000 nanoseconds (one millisecond). Cameras without that feature are checked by status alone. Include `PtpStatus` and `PtpOffsetFromMaster` in the diagnostic feature configuration when supported.
 
-Invalid, repeated, and backward device timestamps are dropped. After a backward clock correction, publication resumes when synchronized timestamps exceed the last published timestamp. With PTP disabled, the existing host timestamp behavior applies.
+Frames timestamped before lock or relock are discarded, including frames queued during negotiation. Invalid, repeated, and backward device timestamps are also dropped. After a backward clock correction, publication resumes when synchronized timestamps exceed the last published timestamp. With PTP disabled, the existing host timestamp behavior applies.
 
 ### How to set specific analog control values (e.g. balance ratios)
 

@@ -360,7 +360,8 @@ bool CameraDriverGv::isTimestampReady(const uint stream_id, ArvBuffer* buffer)
 
     const uint64_t timestamp = arv_buffer_get_timestamp(buffer);
     auto& last_timestamp     = streams_[stream_id].last_device_timestamp;
-    if (timestamp == 0 || timestamp > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+    if (timestamp < ptp_valid_since_ns_ ||
+        timestamp > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
         timestamp <= last_timestamp)
     {
         RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000,
@@ -375,6 +376,7 @@ bool CameraDriverGv::isTimestampReady(const uint stream_id, ArvBuffer* buffer)
 //==================================================================================================
 void CameraDriverGv::checkPtpState()
 {
+    const bool was_ready         = ptp_ready_;
     last_ptp_check_              = std::chrono::steady_clock::now();
     ptp_ready_                   = false;
     p_gv_tl_control_->ptp_status = "Unavailable";
@@ -400,6 +402,10 @@ void CameraDriverGv::checkPtpState()
             return;
         }
     }
+    // A queued frame may still carry a timestamp from before clock synchronization.
+    if (!was_ready)
+        ptp_valid_since_ns_ =
+          static_cast<uint64_t>(rclcpp::Clock(RCL_SYSTEM_TIME).now().nanoseconds());
     ptp_ready_ = true;
 }
 
