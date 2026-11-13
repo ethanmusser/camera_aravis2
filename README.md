@@ -330,6 +330,12 @@ Some GigEVision cameras support the use of the Precision Time Protocol (PTP) to 
     ...
 ```
 
+PTP-enabled publication requires an external master and camera status `Slave`. Images are withheld while the camera negotiates, loses synchronization, or fails a status read. The driver checks synchronization once per second, so detection of lock loss can take up to one second. It does not reset PTP during ordinary negotiation.
+
+The read-only driver parameter `ptp_max_offset_ns` sets the maximum absolute offset from the master when the camera exposes `PtpOffsetFromMaster`. Its default is 1000000 nanoseconds (one millisecond). Cameras without that feature are checked by status alone. Include `PtpStatus` and `PtpOffsetFromMaster` in the diagnostic feature configuration when supported.
+
+Invalid, repeated, and backward device timestamps are dropped. After a backward clock correction, publication resumes when synchronized timestamps exceed the last published timestamp. With PTP disabled, the existing host timestamp behavior applies.
+
 ### How to set specific analog control values (e.g. balance ratios)
 
 Typically GenICam cameras support three different modes for automatic control of analog settings (e.g. gain, black level, white balance), namely 'Continuous', 'Once', and 'Off'. These can be set via the launch parameter and corresponding feature names, i.e. 'GainAuto', 'BlackLevelAuto', 'BalanceWhiteAuto'. As the names suggest, the first mode will continuously adjust the white 

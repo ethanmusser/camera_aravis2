@@ -31,6 +31,8 @@
 // Std
 #include <chrono>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 #include <thread>
 
 // ROS
@@ -51,6 +53,13 @@ CameraDriverGv::CameraDriverGv(const rclcpp::NodeOptions& options) :
 {
     //--- setup parameters
     setupParameters();
+
+    auto ptp_offset_desc        = rcl_interfaces::msg::ParameterDescriptor{};
+    ptp_offset_desc.description = "Maximum absolute offset from the PTP master in nanoseconds when the camera exposes PtpOffsetFromMaster.";
+    ptp_offset_desc.read_only   = true;
+    ptp_max_offset_ns_          = declare_parameter<int64_t>("ptp_max_offset_ns", 1000000, ptp_offset_desc);
+    if (ptp_max_offset_ns_ < 0)
+        throw std::invalid_argument("ptp_max_offset_ns must be nonnegative.");
 
     is_verbose_enable_ = get_parameter("verbose").as_bool();
 
@@ -219,8 +228,8 @@ CameraDriverGv::~CameraDriverGv()
     tmp_feature_name = "PtpEnable";
     RCLCPP_DEBUG(logger_, "Evaluating 'TransportLayerControl.%s'", tmp_feature_name.c_str());
     is_parameter_set = getTransportLayerControlParameter(tmp_feature_name, tmp_param_value);
-    if (is_parameter_set)
-        setFeatureValueFromParameter<bool>(tmp_feature_name, tmp_param_value);
+    if (is_parameter_set && !setFeatureValueFromParameter<bool>(tmp_feature_name, tmp_param_value))
+        return false;
     getFeatureValue<bool>(tmp_feature_name, p_gv_tl_control_->is_ptp_enable);
     if (is_parameter_set &&
         !isParameterValueEqualTo<bool>(tmp_param_value, p_gv_tl_control_->is_ptp_enable))
@@ -310,38 +319,58 @@ void CameraDriverGv::tuneArvStream(ArvStream* p_stream) const
 void CameraDriverGv::postFrameProcessingCallback(const uint stream_id)
 {
     RCL_UNUSED(stream_id);
+}
 
-    if (p_gv_tl_control_ && p_gv_tl_control_->is_ptp_enable)
+//==================================================================================================
+bool CameraDriverGv::isTimestampReady(const uint stream_id, ArvBuffer* buffer)
+{
+    if (!p_gv_tl_control_ || !p_gv_tl_control_->is_ptp_enable)
+        return true;
+
+    const std::lock_guard<std::mutex> lock(ptp_mutex_);
+    if (std::chrono::steady_clock::now() - last_ptp_check_ >= std::chrono::seconds(1))
         checkPtpState();
+    if (!ptp_ready_)
+    {
+        RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000, "Withholding images until PTP is synchronized. Status: %s", p_gv_tl_control_->ptp_status.c_str());
+        return false;
+    }
+
+    const uint64_t timestamp = arv_buffer_get_timestamp(buffer);
+    auto& last_timestamp     = streams_[stream_id].last_device_timestamp;
+    if (timestamp == 0 || timestamp > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) || timestamp <= last_timestamp)
+    {
+        RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000, "Dropping an invalid or nonincreasing PTP timestamp on stream %u.", stream_id);
+        return false;
+    }
+    last_timestamp = timestamp;
+    return true;
 }
 
 //==================================================================================================
 void CameraDriverGv::checkPtpState()
 {
-    //--- get status
-    getFeatureValue<std::string>("PtpStatus", p_gv_tl_control_->ptp_status);
+    last_ptp_check_              = std::chrono::steady_clock::now();
+    ptp_ready_                   = false;
+    p_gv_tl_control_->ptp_status = "Unavailable";
 
-    //--- check if clock needs reset
-    if (p_gv_tl_control_->ptp_status == "Faulty" ||
-        p_gv_tl_control_->ptp_status == "Disabled" ||
-        p_gv_tl_control_->ptp_status == "Initializing" ||
-        p_gv_tl_control_->ptp_status == "Uncalibrated")
+    // Some cameras require a latch before reading their PTP snapshot.
+    if (arv_device_get_feature(p_device_, "PtpDataSetLatch") != nullptr && !executeCommand("PtpDataSetLatch"))
+        return;
+    if (!getFeatureValue<std::string>("PtpStatus", p_gv_tl_control_->ptp_status) || p_gv_tl_control_->ptp_status != "Slave")
+        return;
+
+    if (arv_device_get_feature(p_device_, "PtpOffsetFromMaster") != nullptr)
     {
-        RCLCPP_INFO_EXPRESSION(logger_, is_verbose_enable_,
-                               "PTP Status: %s. Resetting PTP clock.",
-                               p_gv_tl_control_->ptp_status.c_str());
-
-        setFeatureValue<bool>("PtpEnable", false);
-        setFeatureValue<bool>("PtpEnable", true);
-
-        executeCommand("PtpDataSetLatch");
-
-        getFeatureValue<std::string>("PtpStatus", p_gv_tl_control_->ptp_status);
-
-        RCLCPP_INFO_EXPRESSION(logger_, is_verbose_enable_,
-                               "New PTP Status: %s.",
-                               p_gv_tl_control_->ptp_status.c_str());
+        if (!getFeatureValue<int64_t>("PtpOffsetFromMaster", p_gv_tl_control_->ptp_offset))
+            return;
+        if (p_gv_tl_control_->ptp_offset < -ptp_max_offset_ns_ || p_gv_tl_control_->ptp_offset > ptp_max_offset_ns_)
+        {
+            RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000, "PTP offset %ld ns exceeds the %ld ns limit.", p_gv_tl_control_->ptp_offset, ptp_max_offset_ns_);
+            return;
+        }
     }
+    ptp_ready_ = true;
 }
 
 }  // end namespace camera_aravis2

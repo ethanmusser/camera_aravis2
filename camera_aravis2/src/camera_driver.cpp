@@ -1828,6 +1828,9 @@ void CameraDriver::processStreamBuffer(const uint stream_id)
                         stream.image_roi.width, stream.image_roi.height);
         }
 
+        if (!isTimestampReady(stream_id, p_arv_buffer))
+            continue;
+
         //--- set meta data of image message
         fillImageMsgMetadata(p_img_msg, p_arv_buffer, stream.sensor, stream.image_roi);
 

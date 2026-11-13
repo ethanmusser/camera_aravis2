@@ -35,7 +35,10 @@
 #endif
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <thread>
 
@@ -44,15 +47,158 @@ using namespace std::chrono_literals;
 namespace
 {
 
+class InspectableCamera : public camera_aravis2::CameraDriverGv
+{
+  public:
+    using CameraDriverGv::CameraDriverGv;
+
+    bool acceptTimestamp(const uint64_t timestamp)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(ptp_mutex_);
+            checkPtpState();
+        }
+        std::unique_ptr<ArvBuffer, decltype(&g_object_unref)> buffer(arv_buffer_new_allocate(1), &g_object_unref);
+        arv_buffer_set_timestamp(buffer.get(), timestamp);
+        return isTimestampReady(0, buffer.get());
+    }
+};
+
 class CameraFixture
 {
   public:
-    CameraFixture() :
-      server_(arv_gv_fake_camera_new("127.0.0.1", "DriverTest"), &g_object_unref),
+    explicit CameraFixture(bool with_ptp = false) :
+      server_(nullptr, &g_object_unref),
       context_(std::make_shared<rclcpp::Context>())
     {
+        if (with_ptp)
+        {
+            std::unique_ptr<ArvFakeCamera, decltype(&g_object_unref)> source(arv_fake_camera_new("XML"), &g_object_unref);
+            size_t size      = 0;
+            const char* data = arv_fake_camera_get_genicam_xml(source.get(), &size);
+            std::string xml(data, size);
+            xml.insert(xml.rfind("</RegisterDescription>"), R"(
+    <Boolean Name="PtpEnable">
+        <pValue>PtpEnableRegister</pValue>
+        <OnValue>1</OnValue>
+        <OffValue>0</OffValue>
+    </Boolean>
+    
+
+    <IntReg Name="PtpEnableRegister">
+        <Address>0x5010</Address>
+        <Length>4</Length>
+        <AccessMode>RW</AccessMode>
+        <pPort>Device</pPort>
+        <Sign>Unsigned</Sign>
+        <Endianess>BigEndian</Endianess>
+    </IntReg>
+    
+
+    <Enumeration Name="PtpStatus">
+        <pIsAvailable>PtpStatusAvailable</pIsAvailable>
+        <EnumEntry Name="Listening">
+            <Value>0</Value>
+        </EnumEntry>
+        <EnumEntry Name="Slave">
+            <Value>1</Value>
+        </EnumEntry>
+        <EnumEntry Name="Uncalibrated">
+            <Value>2</Value>
+        </EnumEntry>
+        <pValue>PtpStatusRegister</pValue>
+    </Enumeration>
+    
+
+    <IntReg Name="PtpStatusRegister">
+        <Address>0x5000</Address>
+        <Length>4</Length>
+        <AccessMode>RO</AccessMode>
+        <pPort>Device</pPort>
+        <Sign>Unsigned</Sign>
+        <Endianess>BigEndian</Endianess>
+        <CachingMode>NoCache</CachingMode>
+    </IntReg>
+    
+
+    <Boolean Name="PtpStatusAvailable">
+        <pValue>PtpStatusAvailableRegister</pValue>
+        <OnValue>1</OnValue>
+        <OffValue>0</OffValue>
+    </Boolean>
+    
+
+    <IntReg Name="PtpStatusAvailableRegister">
+        <Address>0x5020</Address>
+        <Length>4</Length>
+        <AccessMode>RO</AccessMode>
+        <pPort>Device</pPort>
+        <Sign>Unsigned</Sign>
+        <Endianess>BigEndian</Endianess>
+        <CachingMode>NoCache</CachingMode>
+    </IntReg>
+    
+
+    <IntReg Name="PtpOffsetFromMaster">
+        <pIsAvailable>PtpOffsetAvailable</pIsAvailable>
+        <Address>0x5008</Address>
+        <Length>8</Length>
+        <AccessMode>RO</AccessMode>
+        <pPort>Device</pPort>
+        <Sign>Signed</Sign>
+        <Endianess>BigEndian</Endianess>
+        <CachingMode>NoCache</CachingMode>
+    </IntReg>
+    
+
+    <Boolean Name="PtpOffsetAvailable">
+        <pValue>PtpOffsetAvailableRegister</pValue>
+        <OnValue>1</OnValue>
+        <OffValue>0</OffValue>
+    </Boolean>
+    
+
+    <IntReg Name="PtpOffsetAvailableRegister">
+        <Address>0x5024</Address>
+        <Length>4</Length>
+        <AccessMode>RO</AccessMode>
+        <pPort>Device</pPort>
+        <Sign>Unsigned</Sign>
+        <Endianess>BigEndian</Endianess>
+        <CachingMode>NoCache</CachingMode>
+    </IntReg>
+    
+
+    <Command Name="PtpDataSetLatch">
+        <pValue>PtpLatchRegister</pValue>
+        <CommandValue>1</CommandValue>
+    </Command>
+    
+
+    <IntReg Name="PtpLatchRegister">
+        <Address>0x5014</Address>
+        <Length>4</Length>
+        <AccessMode>WO</AccessMode>
+        <pPort>Device</pPort>
+        <Sign>Unsigned</Sign>
+        <Endianess>BigEndian</Endianess>
+    </IntReg>
+)");
+            xml_path_ = std::filesystem::temp_directory_path() / ("aravis-ptp-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".xml");
+            std::ofstream(xml_path_) << xml;
+            server_.reset(arv_gv_fake_camera_new_full("127.0.0.1", "DriverTest", xml_path_.c_str()));
+        }
+        else
+        {
+            server_.reset(arv_gv_fake_camera_new("127.0.0.1", "DriverTest"));
+        }
         REQUIRE(server_ != nullptr);
         REQUIRE(arv_gv_fake_camera_is_running(server_.get()));
+        if (with_ptp)
+        {
+            writeRegister(0x5020, 1);
+            writeRegister(0x5024, 1);
+        }
         context_->init(0, nullptr);
         rclcpp::ExecutorOptions executor_options;
         executor_options.context = context_;
@@ -67,6 +213,9 @@ class CameraFixture
             executor_->remove_node(camera_);
         camera_.reset();
         context_->shutdown("Test complete.");
+        server_.reset();
+        if (!xml_path_.empty())
+            std::filesystem::remove(xml_path_);
     }
 
     void subscribe()
@@ -93,7 +242,7 @@ class CameraFixture
         };
         parameters.insert(parameters.end(), extra_parameters.begin(), extra_parameters.end());
         options.parameter_overrides(parameters);
-        camera_ = std::make_shared<camera_aravis2::CameraDriverGv>(options);
+        camera_ = std::make_shared<InspectableCamera>(options);
         executor_->add_node(camera_);
     }
 
@@ -113,11 +262,33 @@ class CameraFixture
         return arv_fake_camera_get_acquisition_status(arv_gv_fake_camera_get_fake_camera(server_.get()));
     }
 
+    void writeRegister(guint32 address, guint32 value)
+    {
+        REQUIRE(arv_fake_camera_write_register(arv_gv_fake_camera_get_fake_camera(server_.get()), address, value));
+    }
+
+    void setPtpOffset(int64_t offset)
+    {
+        const guint64 encoded = GUINT64_TO_BE(static_cast<guint64>(offset));
+        REQUIRE(arv_fake_camera_write_memory(arv_gv_fake_camera_get_fake_camera(server_.get()), 0x5008, sizeof(encoded), &encoded));
+    }
+
+    void spinFor(std::chrono::milliseconds duration)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + duration;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            executor_->spin_some();
+            std::this_thread::sleep_for(10ms);
+        }
+    }
+
+    std::filesystem::path xml_path_;
     std::unique_ptr<ArvGvFakeCamera, decltype(&g_object_unref)> server_;
     std::shared_ptr<rclcpp::Context> context_;
     std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
     std::shared_ptr<rclcpp::Node> observer_;
-    std::shared_ptr<camera_aravis2::CameraDriverGv> camera_;
+    std::shared_ptr<InspectableCamera> camera_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_;
     unsigned int images_ = 0;
 };
@@ -171,4 +342,57 @@ TEST_CASE("Rejected camera control batches leave the hardware unchanged", "[came
     REQUIRE(fixture.camera_->set_parameter({"GainRaw", 3}).successful);
     REQUIRE(arv_fake_camera_read_register(arv_gv_fake_camera_get_fake_camera(fixture.server_.get()), ARV_FAKE_CAMERA_REGISTER_GAIN_RAW, &actual_gain));
     CHECK(actual_gain == 3);
+}
+
+TEST_CASE("PTP images wait for lock and stop after lock loss", "[camera][ptp]")
+{
+    CameraFixture fixture(true);
+    fixture.subscribe();
+    fixture.connect({{"TransportLayerControl.PtpEnable", true}});
+    fixture.spinFor(1200ms);
+    CHECK(fixture.images_ == 0);
+    CHECK(fixture.acquisitionStatus() != 0);
+
+    fixture.writeRegister(0x5000, 1);
+    REQUIRE(fixture.waitFor([&fixture]
+                            { return fixture.images_ >= 10; }));
+    fixture.writeRegister(0x5000, 2);
+    fixture.spinFor(1200ms);
+    const auto after_loss = fixture.images_;
+    fixture.spinFor(200ms);
+    CHECK(fixture.images_ == after_loss);
+
+    fixture.writeRegister(0x5000, 1);
+    REQUIRE(fixture.waitFor([&fixture, after_loss]
+                            { return fixture.images_ >= after_loss + 10; }));
+}
+
+TEST_CASE("PTP rejects offsets, failed reads, and backward timestamps", "[camera][ptp]")
+{
+    CameraFixture fixture(true);
+    fixture.writeRegister(0x5000, 1);
+    fixture.connect({{"TransportLayerControl.PtpEnable", true}});
+    REQUIRE(fixture.waitFor([&fixture]
+                            { return fixture.camera_->isInitialized(); }));
+    CHECK(fixture.camera_->acceptTimestamp(100));
+    CHECK_FALSE(fixture.camera_->acceptTimestamp(100));
+    CHECK_FALSE(fixture.camera_->acceptTimestamp(99));
+    CHECK_FALSE(fixture.camera_->acceptTimestamp(0));
+    CHECK_FALSE(fixture.camera_->acceptTimestamp(std::numeric_limits<uint64_t>::max()));
+    CHECK(fixture.camera_->acceptTimestamp(101));
+
+    fixture.setPtpOffset(1000001);
+    CHECK_FALSE(fixture.camera_->acceptTimestamp(102));
+    fixture.setPtpOffset(-1000001);
+    CHECK_FALSE(fixture.camera_->acceptTimestamp(102));
+    fixture.setPtpOffset(-1000000);
+    CHECK(fixture.camera_->acceptTimestamp(102));
+
+    fixture.writeRegister(0x5020, 0);
+    CHECK_FALSE(fixture.camera_->acceptTimestamp(103));
+    fixture.writeRegister(0x5020, 1);
+    fixture.writeRegister(0x5024, 0);
+    CHECK_FALSE(fixture.camera_->acceptTimestamp(103));
+    fixture.writeRegister(0x5024, 1);
+    CHECK(fixture.camera_->acceptTimestamp(103));
 }

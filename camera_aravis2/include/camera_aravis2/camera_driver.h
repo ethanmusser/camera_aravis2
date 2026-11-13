@@ -134,6 +134,9 @@ class CameraDriver : public CameraAravisNodeBase
         /// Flag controlling processing of buffer data.
         bool is_buffer_processed;
 
+        /// Last published PTP timestamp, confined to the buffer processing thread.
+        uint64_t last_device_timestamp = 0;
+
         /// Thread to process ready stream buffer.
         std::thread buffer_processing_thread;
 
@@ -497,6 +500,9 @@ class CameraDriver : public CameraAravisNodeBase
      * @param[in] stream_id ID of stream for which the buffer is to be processed.
      */
     virtual void postFrameProcessingCallback(const uint stream_id) = 0;
+
+    /// Return whether a frame has a usable timestamp before converting or publishing it.
+    virtual bool isTimestampReady(uint, ArvBuffer*) { return true; }
 
     /**
      * @brief Print currently applied camera configuration.
